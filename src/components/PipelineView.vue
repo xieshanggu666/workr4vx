@@ -133,13 +133,17 @@ function strategyInfo(id) {
 function lastInterview(a) {
   return (a.interviews || []).slice().sort((x, y) => x.id - y.id).at(-1) || null
 }
-// 进入 Offer 的前置：最近一轮面试结论为通过
+// 进入 Offer 的前置：最近一轮面试结论为通过 + 候选人责任缺席场次已闭环
 function offerGate(a) {
   const iv = lastInterview(a)
   if (!iv) return { blocked: true, msg: '尚未安排面试' }
   const c = iv.conclusion || iv.result || 'pending'
   if (c === 'pending') return { blocked: true, msg: `最近一轮「${iv.round}」尚未给结论` }
   if (c === 'fail') return { blocked: true, msg: `最近一轮「${iv.round}」结论不通过` }
+  const risk = store.appRisk(a.id)
+  if (risk?.open_candidate_noshow > 0) {
+    return { blocked: true, msg: `候选人有 ${risk.open_candidate_noshow} 场缺席未重约闭环，请先在预约沟通中完成重约` }
+  }
   return { blocked: false }
 }
 // 推进到录用只能由 Offer 接受驱动
@@ -161,6 +165,9 @@ function isBusy(a) { return !!store.pending[busyKey(a)] || !!store.pending[`appr
 // 推进/淘汰/回退属招聘负责人职责；推进不再直接生效，而是提交「候选人推进」审批，由用人经理审批后回写阶段
 const isRecruiter = computed(() => store.myRole === 'recruiter')
 function pendingTaskOf(a, type) { return store.pendingTask(a.id, type) }
+// 预约风险画像（缺席/改期/重约台账口径）：看板卡片展示，与报表中心同源
+function riskOf(a) { return store.appRisk(a.id) }
+const RISK_LEVEL_TAG = { high: ['⚠️ 高风险', 'risk-high'], mid: ['🟡 中风险', 'risk-mid'], low: ['🔵 低关注', 'risk-low'] }
 function anyPendingTask(a) {
   return ['stage_advance', 'interview_conclusion', 'offer_issue'].map(t => pendingTaskOf(a, t)).find(Boolean) || null
 }
@@ -285,6 +292,16 @@ function weightText(weights = {}) {
               <span v-for="t in ['stage_advance','interview_conclusion','offer_issue'].map(x => pendingTaskOf(a, x)).filter(Boolean)" :key="t.id" class="appr-badge" :title="`审批 #${t.id} 等待${t.chain[t.current_step]?.role === 'hiring_manager' ? '用人经理' : t.chain[t.current_step]?.role === 'recruiter' ? '招聘负责人' : '面试官'}处理`">
                 ⏳ {{ TASK_TYPE_LABEL[t.type] }}审批中
               </span>
+            </div>
+            <!-- 预约风险徽标：缺席责任/改期/重约，与报表中心同一台账口径 -->
+            <div class="krisk-row" v-if="riskOf(a) && (riskOf(a).noshow_occasions || riskOf(a).reschedule_count || riskOf(a).rebook_count)">
+              <span v-if="RISK_LEVEL_TAG[riskOf(a).risk_level]" class="risk-lvl" :class="RISK_LEVEL_TAG[riskOf(a).risk_level][1]">
+                {{ RISK_LEVEL_TAG[riskOf(a).risk_level][0] }}
+              </span>
+              <span v-if="riskOf(a).open_noshow" class="risk-tag open" title="缺席场次尚未重约闭环">缺席未闭环 {{ riskOf(a).open_noshow }}</span>
+              <span v-if="riskOf(a).noshow_occasions" class="risk-tag" title="累计缺席场次（改判沿用同场次号）">缺席 {{ riskOf(a).noshow_occasions }}</span>
+              <span v-if="riskOf(a).reschedule_count" class="risk-tag rs" title="已双方确认落地的改期次数">改期 {{ riskOf(a).reschedule_count }}</span>
+              <span v-if="riskOf(a).rebook_count" class="risk-tag rb" title="缺席后重约闭环次数">重约 {{ riskOf(a).rebook_count }}</span>
             </div>
             <div class="kfoot">
               <span class="muted">{{ a.city }}<template v-if="a.stage !== 'submitted'"> · v{{ a.version }}</template></span>
@@ -481,6 +498,15 @@ function weightText(weights = {}) {
 .iv-badge em { font-style: normal; opacity: .7; }
 .of-badge { font-size: 10px; border-radius: 9px; padding: 2px 7px; border: 1px solid; background: var(--panel2); }
 .appr-badge { font-size: 10px; border-radius: 9px; padding: 2px 7px; border: 1px solid rgba(255,209,102,.45); color: var(--accent2); background: rgba(255,209,102,.1); }
+.krisk-row { display: flex; gap: 5px; flex-wrap: wrap; }
+.risk-lvl { font-size: 10px; border-radius: 9px; padding: 2px 7px; border: 1px solid var(--border); color: var(--muted); background: var(--panel2); }
+.risk-lvl.risk-high { color: var(--red); border-color: rgba(255,107,122,.5); background: rgba(255,107,122,.1); }
+.risk-lvl.risk-mid { color: var(--accent2); border-color: rgba(255,209,102,.45); background: rgba(255,209,102,.08); }
+.risk-lvl.risk-low { color: var(--cyan); border-color: rgba(79,195,247,.4); background: rgba(79,195,247,.08); }
+.risk-tag { font-size: 10px; border-radius: 9px; padding: 2px 7px; border: 1px solid rgba(255,107,122,.3); color: var(--red); background: rgba(255,107,122,.05); }
+.risk-tag.open { color: #fff; background: var(--red); border-color: var(--red); font-weight: 700; }
+.risk-tag.rs { color: var(--accent2); border-color: rgba(255,209,102,.4); background: rgba(255,209,102,.06); }
+.risk-tag.rb { color: var(--green); border-color: rgba(87,214,160,.4); background: rgba(87,214,162,.06); }
 .rejected-lane { padding: 0; overflow: hidden; }
 .rl-head { display: flex; justify-content: space-between; align-items: center; padding: 11px 14px; cursor: pointer; user-select: none; }
 .rl-head b { font-size: 14px; display: flex; align-items: center; gap: 8px; }

@@ -454,6 +454,31 @@ CREATE TABLE IF NOT EXISTS appointment_messages (
 );
 CREATE INDEX IF NOT EXISTS idx_appt_msgs_appt ON appointment_messages(appointment_id, id);
 
+-- ---------------- 预约结果风险台账（缺席/改期/重约 → 统一责任判定 → 阶段闸门/风险报表） ----------------
+-- 每次缺席裁定、改期申请、缺席重约都在此留痕；改判会把同一场次的旧裁定置为 superseded，
+-- 重约闭环把未解决缺席置为 resolved；报表与招聘阶段统一读本台账，口径不再各算各的
+CREATE TABLE IF NOT EXISTS schedule_risk_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  application_id INTEGER NOT NULL,
+  appointment_id INTEGER NOT NULL,
+  kind TEXT NOT NULL,                    -- noshow/reschedule/rebook
+  result TEXT NOT NULL DEFAULT '',       -- noshow: candidate_no_show/interviewer_no_show/both_no_show
+  responsible_party TEXT NOT NULL DEFAULT '', -- candidate/interviewer/both/system
+  occurrence INTEGER NOT NULL DEFAULT 1, -- 该预约单第几次缺席（改判沿用同一场次号）
+  source TEXT NOT NULL DEFAULT 'manual', -- auto=系统 sweep 初判 / manual=招聘负责人裁定
+  active INTEGER NOT NULL DEFAULT 1,     -- 0=已被改判取代(superseded)或改期被拒绝
+  status TEXT NOT NULL DEFAULT 'open',   -- noshow: open/resolved/superseded；reschedule: requested/confirmed/rejected；rebook: done
+  reason TEXT NOT NULL DEFAULT '',
+  actor_id TEXT NOT NULL DEFAULT '',
+  actor_name TEXT NOT NULL DEFAULT '',
+  actor_role TEXT NOT NULL DEFAULT '',
+  incident_id INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT '',
+  resolved_at TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_risk_app ON schedule_risk_events(application_id, kind, status);
+CREATE INDEX IF NOT EXISTS idx_risk_appt ON schedule_risk_events(appointment_id, id);
+
 -- 不可篡改兜底：危机审计链拒绝 UPDATE / DELETE（应用层哈希校验 + 数据库触发器双重保护）
 CREATE TRIGGER IF NOT EXISTS trg_crisis_entries_no_update
 BEFORE UPDATE ON crisis_audit_entries

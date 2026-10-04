@@ -46,6 +46,7 @@ export const ACTION_LABEL = {
   'incident.close': '结案归档', 'authz.grant': '临时授权', 'authz.revoke': '收回授权',
   'state.rollback': '流程状态回退', 'state.reject': '流程淘汰',
   'schedule.suspend': '预约同步挂起', 'schedule.rebook': '预约重约恢复', 'schedule.confirmed': '预约确认恢复',
+  'schedule.noshow': '预约缺席裁定', 'schedule.stage_recover': '阶段随重约恢复',
   'approval.auto_cancel': '待审任务同步撤销', 'notification.sync_read': '未读通知同步归并',
   'approval.execute': '审批执行回写', 'approval.failed': '审批执行失败',
   'ticket.create': '创建工单', 'ticket.assign': '工单改派', 'ticket.transition': '工单流转',
@@ -161,6 +162,14 @@ function notifyOne({ recipientRole, type, title, body, appId = 0, incidentId = 0
 // 危机处置按角色全员触达（跨角色协同）；每条通知固化当前责任人，便于铃铛/工单/复盘回查
 function notifyAllRoles(type, { title, body, appId = 0, incidentId = 0, ticketId = 0, taskId = 0, owner = null }) {
   CRISIS_ROLES.forEach(role => notifyOne({ recipientRole: role, type, title, body, appId, incidentId, ticketId, taskId, owner }))
+}
+// 供预约模块在自己的事务内调用：重约确认触发阶段恢复等被动协同结果，按事件三角色触达并归属指挥官
+export function notifyIncidentRoles(type, { title, body, appId = 0, incidentId = 0 }) {
+  const inc = db.prepare('SELECT * FROM crisis_incidents WHERE id=?').get(num(incidentId))
+  notifyAllRoles(type, {
+    title, body, appId, incidentId,
+    owner: inc ? { id: inc.commander_id, name: inc.commander_name } : null
+  })
 }
 // 把最新责任人回写到该事件/工单尚未读的通知上（责任变更不丢失历史，只刷新待办归属）
 function rewriteUnreadOwner({ incidentId, ticketId, owner }) {

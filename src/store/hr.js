@@ -52,6 +52,10 @@ export const useHrStore = defineStore('hr', {
     // 候选人↔面试官双向预约
     scheduleSlots: s => s.data?.slots || [],
     appointments: s => s.data?.appointments || [],
+    // 预约结果风险台账（缺席责任/改期/重约 → 统一口径供报表与看板使用）
+    scheduleRisk: s => s.data?.scheduleRisk || { summary: {}, perApplication: [], events: [] },
+    appRisk: s => appId =>
+      (s.data?.scheduleRisk?.perApplication || []).find(m => m.application_id === appId) || null,
     defaultStrategy: s => s.data?.defaultStrategy || { weights: { skill: 0.4, year: 0.2, salary: 0.15, edu: 0.15, city: 0.1 }, keywordCap: 5 },
     openPositions: s => (s.data?.positions || []).filter(p => p.status === 'open'),
     isBusy: s => key => !!s.pending[key],

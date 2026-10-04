@@ -1,9 +1,13 @@
 import express from 'express'
 import db, { ts, now, DEFAULT_WEIGHTS, DEFAULT_KEYWORD_CAP } from './db.js'
 import {
-  router as crisisRouter, bindCrisisCore, auditPassive, getCrisisState
+  router as crisisRouter, bindCrisisCore, auditPassive, getCrisisState,
+  findActiveIncidentForApp
 } from './crisis.js'
 import { router as scheduleRouter, getScheduleState } from './schedule.js'
+import {
+  bindScheduleCore, assertNoOpenCandidateNoshow, migrateScheduleRisk
+} from './schedule-risk.js'
 
 const app = express()
 app.use(express.json())
@@ -131,6 +135,8 @@ function assertCanEnterOffer(app) {
   const c = iv.conclusion || iv.result || 'pending'
   if (c === 'pending') badRequest(`最近一轮「${iv.round}」尚未给出面试结论，不能进入 Offer`, 'interview_pending')
   if (c === 'fail') badRequest(`最近一轮「${iv.round}」结论为不通过，不能进入 Offer；如需推进请先改判结论`, 'interview_failed')
+  // 预约缺席责任闸门：候选人方（候选人/双方）缺席场次未重约闭环前不进入 Offer；面试官责任不拦截候选人
+  assertNoOpenCandidateNoshow(app.id)
 }
 
 function offerOfApp(applicationId) {
@@ -450,10 +456,14 @@ function buildSnapshot(candId, posId, m, extra = {}, strategy = m) {
   const resolved = strategy && Object.prototype.hasOwnProperty.call(strategy, 'weights')
     ? strategy
     : resolveStrategy(posId, candId)
+  // 兼容存储态结果（resultFromStored 用 strategy_id 而非 versionId）：快照策略版本号两种字段名都取得到
+  const strategyVersionId = Object.prototype.hasOwnProperty.call(resolved, 'versionId')
+    ? resolved.versionId
+    : (num(resolved.strategy_id) || 0)
   return {
     score: m.score, dims: m.dims, reason: m.reason, weakness: m.weakness,
     weights: resolved.weights, keyword_cap: resolved.keywordCap,
-    strategy_id: resolved.versionId, strategy_is_default: resolved.isDefault,
+    strategy_id: strategyVersionId, strategy_is_default: resolved.isDefault ?? (strategyVersionId === 0),
     strategy_status: resolved.status || '',
     strategy_mode: resolved.strategyMode || (resolved.isDefault ? 'default' : 'full'),
     is_canary: !!resolved.isCanary,
@@ -1621,6 +1631,8 @@ app.post('/api/approvals', (req, res, next) => {
         const target = String(b.payload?.target_stage || '')
         if (a.stage === 'rejected') conflict('候选人已淘汰，请先复活后再提请推进', 'rejected_locked')
         if (NEXT_STAGE[a.stage] !== target) badRequest(`目标阶段应为「${STAGE_LABEL[NEXT_STAGE[a.stage]] || '无'}」`, 'target_mismatch')
+        // 提交时同样校验进入 Offer 的面试结论/缺席责任闸门，避免必失败的任务进入审批链
+        if (target === 'offer') assertCanEnterOffer(a)
         payload.target_stage = target
         payload.from_stage = a.stage
         summary = `推进「${STAGE_LABEL[a.stage]} → ${STAGE_LABEL[target]}」`
@@ -2020,6 +2032,8 @@ function migrateHistory() {
   })
 }
 migrateHistory()
+// 预约风险台账旧库回填（缺席/改期/重约 → 统一责任判定，供阶段闸门与风险报表）
+migrateScheduleRisk()
 try {
   const due = sweepStrategyWindows()
   if (due.length) console.log(`[HR] strategy window swept ${due.length} version(s)`)
@@ -2031,6 +2045,12 @@ try {
 bindCrisisCore({ rollbackForIncident })
 app.use('/api/crisis', crisisRouter)
 // 候选人↔面试官双向预约沟通（可用时段/双向确认改期/提醒/缺席处理）
+// 注入主流程状态机：危机重约确认后的阶段恢复复用 moveStage，保证与普通回退/推进完全同一条路径
+bindScheduleCore({
+  moveStageForSchedule: (a, stage, { operator, eventType, fromStage }) =>
+    moveStage(a, stage, { eventType, fromStage, operator }),
+  findActiveIncident: findActiveIncidentForApp
+})
 app.use('/api/schedule', scheduleRouter)
 
 // 统一业务错误出口：ApiError 携带状态码与错误码，其余错误按 500 返回

@@ -39,6 +39,7 @@ const notifyIcon = {
   crisis_grant: '🔑', crisis_grant_log: '🔑', crisis_grant_revoked: '🔒',
   crisis_rollback: '⏪', crisis_ticket: '🎫', crisis_ticket_assign: '🎫', crisis_ticket_update: '🎫',
   crisis_appt_suspended: '⏸️', crisis_task_cancelled: '⏸️',
+  crisis_stage_recovered: '♻️',
   crisis_report: '📝', crisis_closed: '🧾',
   sched_proposed: '📨', sched_partial: '✅', sched_confirmed: '📅',
   sched_reschedule_request: '🔁', sched_reschedule_rejected: '↩️',

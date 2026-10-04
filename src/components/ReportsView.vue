@@ -136,6 +136,36 @@ const triggerLabel = {
   strategy_publish: '全量发布', strategy_canary: '灰度发布', strategy_promote: '灰度转正',
   strategy_rollback: '策略回滚', manual: '手动重算', startup: '启动迁移'
 }
+
+// ---------------- 预约风险与责任（缺席/改期/重约统一台账口径） ----------------
+const riskSummary = computed(() => store.scheduleRisk.summary || {})
+const RISK_PARTY_LABEL = { candidate: '候选人', interviewer: '面试官', both: '双方' }
+const riskLevelMeta = {
+  high: { label: '高风险', cls: 'r-high' }, mid: { label: '中风险', cls: 'r-mid' },
+  low: { label: '低关注', cls: 'r-low' }, none: { label: '无风险', cls: 'r-none' }
+}
+// 有缺席/改期记录的应聘（风险画像），与招聘看板徽标共用同一数据源
+const riskApps = computed(() => {
+  const map = new Map((store.scheduleRisk.perApplication || []).map(m => [m.application_id, m]))
+  return store.applications
+    .map(a => ({ app: a, risk: map.get(a.id) }))
+    .filter(x => x.risk && (x.risk.noshow_occasions > 0 || x.risk.reschedule_count > 0 || x.risk.rebook_count > 0))
+    .sort((x, y) => {
+      const order = { high: 0, mid: 1, low: 2, none: 3 }
+      return (order[x.risk.risk_level] ?? 9) - (order[y.risk.risk_level] ?? 9)
+        || y.risk.noshow_occasions - x.risk.noshow_occasions
+    })
+})
+// 责任归属：按缺席场次统计（改判沿用同一场次号，只计最终责任判定）
+const responsibilityRows = computed(() => [
+  { key: 'candidate', label: '候选人缺席', count: riskSummary.value.candidate_noshow || 0, cls: 'r-high' },
+  { key: 'interviewer', label: '面试官缺席', count: riskSummary.value.interviewer_noshow || 0, cls: 'r-mid' },
+  { key: 'both', label: '双方缺席', count: riskSummary.value.both_noshow || 0, cls: 'r-mid' }
+])
+// 缺席闭环率 = 已重约闭环场次 / 缺席场次
+const noshowResolveRate = computed(() => riskSummary.value.noshow_occasions
+  ? Math.round((riskSummary.value.resolved_occasions || 0) / riskSummary.value.noshow_occasions * 100)
+  : 100)
 </script>
 
 <template>
@@ -241,6 +271,54 @@ const triggerLabel = {
       </div>
     </div>
 
+    <div class="card risk-card">
+      <h3>⚠️ 预约风险与责任（缺席 / 改期 / 重约）
+        <span class="muted risk-sub">缺席裁定、改期协商、重约闭环统一读取风险台账：改判沿用同场次号，重约确认后场次闭环</span>
+      </h3>
+      <div class="risk-kpis">
+        <div class="rk"><em>缺席场次</em><b class="r-high">{{ riskSummary.noshow_occasions || 0 }}</b></div>
+        <div class="rk"><em>缺席率（占完成+缺席）</em><b>{{ riskSummary.noshow_rate || 0 }}%</b></div>
+        <div class="rk"><em>未闭环缺席</em><b :class="{ 'r-high': riskSummary.open_noshow > 0 }">{{ riskSummary.open_noshow || 0 }}</b></div>
+        <div class="rk"><em>缺席重约闭环率</em><b class="r-green">{{ noshowResolveRate }}%</b></div>
+        <div class="rk"><em>已落地改期</em><b>{{ riskSummary.reschedule_count || 0 }}</b></div>
+        <div class="rk"><em>缺席后重约次数</em><b>{{ riskSummary.rebook_count || 0 }}</b></div>
+        <div class="rk"><em>高/中风险应聘</em>
+          <b><span class="r-high">{{ riskSummary.high_risk_apps || 0 }}</span> / <span class="r-mid">{{ riskSummary.mid_risk_apps || 0 }}</span></b>
+        </div>
+      </div>
+
+      <div class="risk-body">
+        <div class="resp-box">
+          <h4>🧭 缺席责任判定（按场次，含改判最终口径）</h4>
+          <div class="resp-rows">
+            <div v-for="r in responsibilityRows" :key="r.key" class="resp-row">
+              <span>{{ r.label }}</span>
+              <b :class="r.cls">{{ r.count }}</b>
+              <i class="rbar"><em :class="r.cls" :style="{ width: (riskSummary.noshow_occasions ? r.count / riskSummary.noshow_occasions * 100 : 0) + '%' }"></em></i>
+            </div>
+            <div class="muted tip" style="margin:4px 0 0">候选人/双方责任的未闭环场次会在进入 Offer 前拦截；面试官责任不拦截候选人推进，但计入面试官风险画像。</div>
+          </div>
+        </div>
+        <div class="risk-list-box">
+          <h4>🚨 应聘风险清单</h4>
+          <div class="risk-rows">
+            <div v-for="x in riskApps.slice(0, 8)" :key="x.app.id" class="risk-row">
+              <span class="rname">{{ x.app.candidate }} · {{ x.app.position }}</span>
+              <span class="rlvl" :class="riskLevelMeta[x.risk.risk_level].cls">{{ riskLevelMeta[x.risk.risk_level].label }}</span>
+              <span class="rtags">
+                <em v-if="x.risk.noshow_occasions" class="tag-no">缺席 {{ x.risk.noshow_occasions }}</em>
+                <em v-if="x.risk.open_noshow" class="tag-open">未闭环 {{ x.risk.open_noshow }}</em>
+                <em v-if="x.risk.reschedule_count" class="tag-rs">改期 {{ x.risk.reschedule_count }}</em>
+                <em v-if="x.risk.rebook_count" class="tag-rb">重约 {{ x.risk.rebook_count }}</em>
+              </span>
+            </div>
+            <div class="muted empty-mini" v-if="!riskApps.length">暂无缺席/改期风险记录。</div>
+          </div>
+        </div>
+      </div>
+      <div class="muted tip">口径：同一预约单的改判沿用同一缺席场次号（旧裁定 superseded）；拒绝改期不计入改期次数；重约经双方确认成立后该缺席场次置 resolved；危机回退挂起的预约重约恢复同样走本台账。</div>
+    </div>
+
     <div class="card governance-card">
       <h3>🧪 策略版本治理与灰度效果</h3>
       <div class="gov-kpis">
@@ -325,4 +403,39 @@ const triggerLabel = {
 .job-row { display: grid; grid-template-columns: .6fr 1fr .6fr 1fr .6fr .8fr; gap: 8px; padding: 8px 10px; font-size: 12px; }
 .job-row:nth-child(odd):not(.job-head) { background: var(--panel2); }
 .job-head { background: rgba(91,140,255,.1); font-weight: 700; color: var(--accent); }
+
+/* 预约风险与责任 */
+.risk-sub { font-size: 11px; font-weight: 400; margin-left: 8px; }
+.risk-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin: 10px 0 14px; }
+.risk-kpis .rk { background: var(--panel2); border-radius: 10px; padding: 11px; text-align: center; }
+.risk-kpis em { display: block; font-style: normal; font-size: 11.5px; color: var(--muted); min-height: 32px; }
+.risk-kpis b { display: block; font-size: 22px; color: var(--accent); margin-top: 4px; }
+.r-high { color: var(--red) !important; }
+.r-mid { color: var(--accent2) !important; }
+.r-low { color: var(--cyan) !important; }
+.r-green { color: var(--green) !important; }
+.risk-body { display: grid; grid-template-columns: 1fr 1.2fr; gap: 14px; }
+@media (max-width: 900px) { .risk-body { grid-template-columns: 1fr; } }
+.risk-body h4 { font-size: 13px; margin: 0 0 9px; }
+.resp-rows { display: flex; flex-direction: column; gap: 9px; }
+.resp-row { display: grid; grid-template-columns: 80px 34px 1fr; align-items: center; gap: 10px; font-size: 12.5px; }
+.resp-row b { font-size: 16px; text-align: right; }
+.rbar { position: relative; height: 8px; background: var(--panel2); border-radius: 5px; overflow: hidden; }
+.rbar em { position: absolute; inset: 0 auto 0 0; border-radius: 5px; display:block; }
+.rbar em.r-high { background: var(--red); }
+.rbar em.r-mid { background: var(--accent2); }
+.risk-rows { display: flex; flex-direction: column; gap: 7px; max-height: 220px; overflow: auto; }
+.risk-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: var(--panel2); border-radius: 9px; font-size: 12.5px; }
+.rname { font-weight: 600; }
+.rlvl { font-size: 11px; border-radius: 9px; padding: 2px 9px; border: 1px solid var(--border); color: var(--muted); }
+.rlvl.r-high { color: var(--red); border-color: rgba(255,107,122,.5); background: rgba(255,107,122,.08); }
+.rlvl.r-mid { color: var(--accent2); border-color: rgba(255,209,102,.45); background: rgba(255,209,102,.08); }
+.rlvl.r-low { color: var(--cyan); border-color: rgba(79,195,247,.4); background: rgba(79,195,247,.08); }
+.rtags { margin-left: auto; display: flex; gap: 5px; }
+.rtags em { font-style: normal; font-size: 10.5px; border-radius: 8px; padding: 1px 7px; border: 1px solid var(--border); color: var(--muted); }
+.rtags .tag-no { color: var(--red); border-color: rgba(255,107,122,.4); }
+.rtags .tag-open { color: #fff; background: var(--red); border-color: var(--red); }
+.rtags .tag-rs { color: var(--accent2); border-color: rgba(255,209,102,.4); }
+.rtags .tag-rb { color: var(--green); border-color: rgba(87,214,160,.4); }
+.empty-mini { font-size: 12px; padding: 10px; text-align: center; }
 </style>
