@@ -52,6 +52,8 @@ export const useHrStore = defineStore('hr', {
     // 候选人↔面试官双向预约
     scheduleSlots: s => s.data?.slots || [],
     appointments: s => s.data?.appointments || [],
+    appointmentAdjudications: s => s.data?.appointmentAdjudications || [],
+    scheduleRiskSummary: s => s.data?.scheduleRiskSummary || null,
     defaultStrategy: s => s.data?.defaultStrategy || { weights: { skill: 0.4, year: 0.2, salary: 0.15, edu: 0.15, city: 0.1 }, keywordCap: 5 },
     openPositions: s => (s.data?.positions || []).filter(p => p.status === 'open'),
     isBusy: s => key => !!s.pending[key],
@@ -81,7 +83,8 @@ export const useHrStore = defineStore('hr', {
         }
         if (my?.role === 'recruiter') {
           return ((a.status === 'negotiating' || a.status === 'rescheduling') && !a.cand_confirmed) ||
-            (a.status === 'no_show' && a.checkin_flagged)
+            // 仅系统初判（责任待裁定）计入待办；招聘负责人已裁定/改判后不再红点点
+            (a.status === 'no_show' && a.responsible_party === 'system_pending')
         }
         return false
       }).length

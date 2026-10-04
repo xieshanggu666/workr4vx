@@ -136,6 +136,22 @@ const triggerLabel = {
   strategy_publish: '全量发布', strategy_canary: '灰度发布', strategy_promote: '灰度转正',
   strategy_rollback: '策略回滚', manual: '手动重算', startup: '启动迁移'
 }
+
+// ---------------- 面试预约风险报表（缺席/改期/重约统一口径） ----------------
+// 数据源与招聘看板/预约沟通完全一致：applications.schedule_risk 由后端在任一预约状态变化（裁定/重约/改期/
+// 危机挂起/恢复）同事务重算回写；责任归属以 appointment_adjudications 最终裁定为准（改判不丢历史）
+const risk = computed(() => store.scheduleRiskSummary || {})
+const RISK_LEVEL_LABEL = { high: '高风险', mid: '中风险', none: '无' }
+const riskApps = computed(() =>
+  store.applications
+    .filter(a => a.scheduleRisk && a.scheduleRisk.appt_total > 0)
+    .map(a => ({ a, r: a.scheduleRisk }))
+    .sort((x, y) => ({ high: 2, mid: 1, none: 0 }[y.r.risk_level] - { high: 2, mid: 1, none: 0 }[x.r.risk_level]
+      || y.r.noshow_total - x.r.noshow_total))
+)
+const riskInterviewers = computed(() => (risk.value.interviewer_responsibility || [])
+  .filter(v => v.interviewer_noshow || v.both_noshow || v.candidate_noshow || v.reschedule_total)
+  .slice(0, 8))
 </script>
 
 <template>
@@ -241,6 +257,54 @@ const triggerLabel = {
       </div>
     </div>
 
+    <div class="card risk-card">
+      <h3>⚠️ 面试预约风险报表（缺席 · 改期 · 重约）
+        <span class="muted" style="font-size:11px;font-weight:400;margin-left:8px">责任裁定以最终裁定为准，改判/重约/危机恢复同事务回写，与招聘看板口径一致</span>
+      </h3>
+      <div class="risk-kpis">
+        <div><em>高风险应聘</em><b class="r-high">{{ risk.high_risk_apps || 0 }}</b></div>
+        <div><em>中风险应聘</em><b class="r-mid">{{ risk.mid_risk_apps || 0 }}</b></div>
+        <div><em>候选人责任缺席</em><b class="r-high">{{ risk.candidate_noshow || 0 }}</b></div>
+        <div><em>面试官责任缺席</em><b class="r-mid">{{ risk.interviewer_noshow || 0 }}</b></div>
+        <div><em>双方缺席</em><b>{{ risk.both_noshow || 0 }}</b></div>
+        <div><em>累计改期</em><b>{{ risk.reschedule_total || 0 }}</b></div>
+        <div><em>待重约（缺席未闭环）</em><b class="r-mid">{{ risk.rebook_open || 0 }}</b></div>
+        <div><em>危机挂起</em><b class="r-crisis">{{ risk.crisis_suspended || 0 }}</b></div>
+        <div><em>责任到场率</em><b>{{ risk.attend_rate == null ? '—' : risk.attend_rate + '%' }}</b></div>
+      </div>
+
+      <div class="risk-cols">
+        <div class="risk-table">
+          <h4>在途应聘风险清单</h4>
+          <div class="rt-row rt-head rt-cols-app"><span>候选人 · 职位</span><span>风险</span><span>责任缺席（候/官/双）</span><span>改期</span><span>待重约</span></div>
+          <div class="rt-row rt-cols-app" v-for="({ a, r }) in riskApps.slice(0, 12)" :key="a.id">
+            <span class="rt-name">{{ a.candidate }}<em class="muted"> · {{ a.position }}</em></span>
+            <span class="rt-level" :class="r.risk_level">{{ RISK_LEVEL_LABEL[r.risk_level] }}</span>
+            <span class="rt-nums"><i class="r-high">{{ r.candidate_noshow }}</i> / <i class="r-mid">{{ r.interviewer_noshow }}</i> / <i>{{ r.both_noshow }}</i></span>
+            <span>{{ r.reschedule_total }}</span>
+            <span :class="{ 'r-mid': r.rebook_open }">{{ r.rebook_open }}</span>
+          </div>
+          <div class="muted empty-mini" v-if="!riskApps.length">暂无已安排预约的应聘。</div>
+        </div>
+        <div class="risk-table">
+          <h4>面试官责任画像（缺席 / 改期）</h4>
+          <div class="rt-row rt-head rt-cols-iv"><span>面试官</span><span>面试官缺席</span><span>双方缺席</span><span>候选人缺席</span><span>改期</span></div>
+          <div class="rt-row rt-cols-iv" v-for="v in riskInterviewers" :key="v.id">
+            <span class="rt-name">{{ v.name }}</span>
+            <span :class="{ 'r-mid': v.interviewer_noshow }">{{ v.interviewer_noshow || 0 }}</span>
+            <span :class="{ 'r-mid': v.both_noshow }">{{ v.both_noshow || 0 }}</span>
+            <span :class="{ 'r-high': v.candidate_noshow }">{{ v.candidate_noshow || 0 }}</span>
+            <span>{{ v.reschedule_total || 0 }}</span>
+          </div>
+          <div class="muted empty-mini" v-if="!riskInterviewers.length">暂无预约记录。</div>
+        </div>
+      </div>
+      <div class="muted tip">
+        候选人/双方责任缺席未完成重约（或候选人发起的改期仍在协商）时，招聘阶段「面试 → Offer」推进被服务端硬拦截；面试官单方责任缺席不阻塞候选人流程但计入责任画像。
+        责任到场率 = 已完成预约 ÷（完成 + 责任已落定的缺席），系统初判待裁定的记录不计入分母。
+      </div>
+    </div>
+
     <div class="card governance-card">
       <h3>🧪 策略版本治理与灰度效果</h3>
       <div class="gov-kpis">
@@ -325,4 +389,30 @@ const triggerLabel = {
 .job-row { display: grid; grid-template-columns: .6fr 1fr .6fr 1fr .6fr .8fr; gap: 8px; padding: 8px 10px; font-size: 12px; }
 .job-row:nth-child(odd):not(.job-head) { background: var(--panel2); }
 .job-head { background: rgba(91,140,255,.1); font-weight: 700; color: var(--accent); }
+
+/* 面试预约风险报表 */
+.risk-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.risk-kpis div { background: var(--panel2); border-radius: 10px; padding: 11px; text-align: center; }
+.risk-kpis em { display: block; font-style: normal; font-size: 11.5px; color: var(--muted); }
+.risk-kpis b { display: block; font-size: 21px; margin-top: 4px; }
+.risk-kpis b.r-high { color: var(--red); }
+.risk-kpis b.r-mid { color: var(--accent2); }
+.risk-kpis b.r-crisis { color: var(--purple); }
+.risk-cols { display: grid; grid-template-columns: 1.35fr 1fr; gap: 14px; }
+@media (max-width: 1000px) { .risk-cols { grid-template-columns: 1fr; } }
+.risk-table h4 { font-size: 13px; margin-bottom: 8px; }
+.rt-row { display: grid; gap: 8px; align-items: center; padding: 7px 9px; font-size: 12px; border-radius: 8px; }
+.rt-cols-app { grid-template-columns: 1.6fr .7fr 1.3fr .6fr .7fr; }
+.rt-cols-iv { grid-template-columns: 1.4fr .7fr 1fr 1fr .6fr; }
+.rt-row:nth-child(odd) { background: var(--panel2); }
+.rt-head { font-weight: 700; color: var(--accent); background: rgba(91,140,255,.08) !important; }
+.rt-name em { font-style: normal; opacity: .75; }
+.rt-level { border-radius: 9px; padding: 1px 8px; text-align: center; border: 1px solid var(--border); color: var(--muted); font-size: 11px; }
+.rt-level.high { color: var(--red); border-color: rgba(255,107,122,.45); background: rgba(255,107,122,.08); }
+.rt-level.mid { color: var(--accent2); border-color: rgba(255,209,102,.45); background: rgba(255,209,102,.08); }
+.rt-level.none { color: var(--green); border-color: rgba(87,214,160,.35); }
+.rt-nums i { font-style: normal; }
+.r-high { color: var(--red); font-weight: 700; }
+.r-mid { color: var(--accent2); font-weight: 700; }
+.empty-mini { padding: 8px 4px; font-size: 12px; text-align: center; }
 </style>

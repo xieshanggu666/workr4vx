@@ -3,7 +3,7 @@ import db, { ts, now, DEFAULT_WEIGHTS, DEFAULT_KEYWORD_CAP } from './db.js'
 import {
   router as crisisRouter, bindCrisisCore, auditPassive, getCrisisState
 } from './crisis.js'
-import { router as scheduleRouter, getScheduleState } from './schedule.js'
+import { router as scheduleRouter, getScheduleState, assertScheduleAllowsOffer, rebuildAllAppointmentRisks } from './schedule.js'
 
 const app = express()
 app.use(express.json())
@@ -131,6 +131,8 @@ function assertCanEnterOffer(app) {
   const c = iv.conclusion || iv.result || 'pending'
   if (c === 'pending') badRequest(`最近一轮「${iv.round}」尚未给出面试结论，不能进入 Offer`, 'interview_pending')
   if (c === 'fail') badRequest(`最近一轮「${iv.round}」结论为不通过，不能进入 Offer；如需推进请先改判结论`, 'interview_failed')
+  // 预约结果联动：候选人责任缺席未闭环（未重约）/候选人改期仍在协商，阶段不得推进，保证看板/预约/报表口径一致
+  assertScheduleAllowsOffer(app.id)
 }
 
 function offerOfApp(applicationId) {
@@ -596,6 +598,8 @@ app.get('/api/state', (req, res) => {
       candidate: cand ? cand.name : '', candSkills: cand ? cand.skills : [],
       matchSnapshot: snap, matched_at: a.matched_at || '',
       stageSnapshot: stageSnap, entered_at: a.entered_at || '',
+      // 预约风险快照：缺席/改期/重约结果在预约事务内统一重算回写，看板与报表共用此口径
+      scheduleRisk: parseJSON(a.schedule_risk, null),
       match: latest,
       events: appEvents.filter(e => e.application_id === a.id),
       interviews: its, offer: of,
@@ -605,11 +609,67 @@ app.get('/api/state', (req, res) => {
   res.json({
     positions, candidates, applications: pipelines, interviews, offers, offerLogs, channels, matches,
     strategyVersions, recalcJobs, recalcItems, users, approvals, notifications,
+    scheduleRiskSummary: buildScheduleRiskSummary(pipelines),
     defaultStrategy: { weights: { ...DEFAULT_WEIGHTS }, keywordCap: DEFAULT_KEYWORD_CAP },
     ...getCrisisState(),
     ...getScheduleState()
   })
 })
+
+// 预约风险报表口径：与每个应聘 scheduleRisk 同源（快照在预约/缺席/重约事务内统一回写）
+function buildScheduleRiskSummary(pipelines) {
+  const rows = pipelines.map(a => a.scheduleRisk).filter(Boolean)
+  const sum = k => rows.reduce((s, r) => s + (num(r[k]) || 0), 0)
+  const withAppt = rows.filter(r => num(r.appt_total) > 0)
+  // 责任出勤率（仅统计已闭环的完成/缺席）：完成 / (完成 + 已落定责任的缺席)
+  const completed = sum('completed')
+  const settledNoShow = sum('candidate_noshow') + sum('interviewer_noshow') + sum('both_noshow')
+  const attendRate = (completed + settledNoShow) ? Math.round(completed / (completed + settledNoShow) * 100) : null
+  // 面试官责任：按 interviews 预约单聚合最终缺席责任（改判后以最后裁定为准），取 appointments 状态字段
+  const interviewerMap = new Map()
+  db.prepare(`SELECT interviewer_id, interviewer_name, COUNT(*) c FROM appointments
+            WHERE final_result='interviewer_no_show' GROUP BY interviewer_id`).all().forEach(r => {
+    interviewerMap.set(r.interviewer_id, { id: r.interviewer_id, name: r.interviewer_name, interviewer_noshow: num(r.c), both_noshow: 0, candidate_noshow: 0 })
+  })
+  db.prepare(`SELECT interviewer_id, interviewer_name, COUNT(*) c FROM appointments
+            WHERE final_result='both_no_show' GROUP BY interviewer_id`).all().forEach(r => {
+    const cur = interviewerMap.get(r.interviewer_id) || { id: r.interviewer_id, name: r.interviewer_name, interviewer_noshow: 0, both_noshow: 0, candidate_noshow: 0 }
+    cur.both_noshow += num(r.c)
+    interviewerMap.set(r.interviewer_id, cur)
+  })
+  db.prepare(`SELECT interviewer_id, interviewer_name, COUNT(*) c FROM appointments
+            WHERE final_result='candidate_no_show' GROUP BY interviewer_id`).all().forEach(r => {
+    const cur = interviewerMap.get(r.interviewer_id) || { id: r.interviewer_id, name: r.interviewer_name, interviewer_noshow: 0, both_noshow: 0, candidate_noshow: 0 }
+    cur.candidate_noshow += num(r.c)
+    interviewerMap.set(r.interviewer_id, cur)
+  })
+  // 改期次数按面试官聚合（用于报表的改期责任画像）
+  db.prepare(`SELECT interviewer_id, interviewer_name, SUM(reschedule_count) c FROM appointments
+            GROUP BY interviewer_id`).all().forEach(r => {
+    const cur = interviewerMap.get(r.interviewer_id) || { id: r.interviewer_id, name: r.interviewer_name, interviewer_noshow: 0, both_noshow: 0, candidate_noshow: 0 }
+    cur.reschedule_total = num(r.c)
+    interviewerMap.set(r.interviewer_id, cur)
+  })
+  return {
+    apps_with_appointments: withAppt.length,
+    active_appointments: sum('active_total'),
+    completed,
+    noshow_total: sum('noshow_total'),
+    candidate_noshow: sum('candidate_noshow'),
+    interviewer_noshow: sum('interviewer_noshow'),
+    both_noshow: sum('both_noshow'),
+    reschedule_total: sum('reschedule_total'),
+    pending_reschedule: sum('pending_reschedule'),
+    rebook_open: sum('rebook_open'),
+    crisis_suspended: sum('crisis_suspended'),
+    attend_rate: attendRate,
+    high_risk_apps: rows.filter(r => r.risk_level === 'high').length,
+    mid_risk_apps: rows.filter(r => r.risk_level === 'mid').length,
+    interviewer_responsibility: [...interviewerMap.values()]
+      .map(v => ({ ...v, reschedule_total: num(v.reschedule_total) }))
+      .sort((a, b) => (b.interviewer_noshow + b.both_noshow) - (a.interviewer_noshow + a.both_noshow))
+  }
+}
 
 app.get('/api/summary', (req, res) => {
   const pos = db.prepare('SELECT status, COUNT(*) c FROM positions GROUP BY status').all()
@@ -2020,6 +2080,13 @@ function migrateHistory() {
   })
 }
 migrateHistory()
+// 预约缺席/改期/重约风险快照在旧数据上按 appointments + appointment_adjudications 统一重算（幂等，不改业务状态）
+try {
+  const riskApps = rebuildAllAppointmentRisks()
+  if (riskApps) console.log(`[HR] appointment risk snapshots rebuilt for ${riskApps} applications`)
+} catch (e) {
+  console.error('[HR] appointment risk rebuild failed:', e)
+}
 try {
   const due = sweepStrategyWindows()
   if (due.length) console.log(`[HR] strategy window swept ${due.length} version(s)`)

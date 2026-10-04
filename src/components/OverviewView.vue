@@ -64,6 +64,8 @@ const channelCount = computed(() => {
       <div class="card stat"><span>🎉</span><b class="money">{{ joinedCount }}</b><em>已入职</em></div>
       <div class="card stat"><span>⏱️</span><b>{{ Math.max(1, store.applications.filter(a => !['hired','rejected'].includes(a.stage)).length) }}</b><em>流程在途</em></div>
       <div class="card stat"><span>📄</span><b>{{ pendingOffer }}</b><em>待回应 Offer</em></div>
+      <div class="card stat"><span>⚠️</span><b :class="{ riskhi: (store.scheduleRiskSummary?.high_risk_apps || 0) > 0 }">{{ store.scheduleRiskSummary?.high_risk_apps || 0 }}</b><em>预约高风险应聘</em></div>
+      <div class="card stat"><span>📅</span><b>{{ store.scheduleRiskSummary?.rebook_open || 0 }}</b><em>缺席待重约</em></div>
     </div>
 
     <div class="row">
@@ -113,6 +115,7 @@ const channelCount = computed(() => {
 .stat { display: flex; flex-direction: column; gap: 4px; }
 .stat span { font-size: 24px; }
 .stat b { font-size: 26px; }
+.stat b.riskhi { color: var(--red); }
 .stat em { font-style: normal; color: var(--muted); font-size: 13px; }
 .row { display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 16px; }
 @media (max-width: 1000px) { .row { grid-template-columns: 1fr; } }

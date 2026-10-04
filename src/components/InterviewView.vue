@@ -56,10 +56,20 @@ function addRound() {
   store.addInterview(detail.value.id, { round, interviewer: '', time: '待定' })
 }
 // 结论已通过 → 提请推进到 Offer（招聘负责人提交，用人经理审批后回写阶段）
+// 进入 Offer 的口径与招聘看板/服务端完全一致：结论通过 + 预约结果（缺席已重约、候选人改期已闭环）
+function offerGateOf(a) {
+  const iv = lastInterview(a)
+  if (!iv || conclusionOf(iv) !== 'pass') return '最近一轮结论未通过'
+  if (a.scheduleRisk?.blocking_noshow) return '存在候选人/双方责任缺席未重约'
+  if (a.scheduleRisk?.blocking_reschedule) return '候选人发起的改期仍在协商中'
+  return ''
+}
 function passAndAdvance(a) {
   const iv = lastInterview(a)
   if (!iv || conclusionOf(iv) !== 'pass') return
   if (!isRecruiter.value) { store.notify('error', '提请推进需「招聘负责人」身份'); return }
+  const gate = offerGateOf(a)
+  if (gate) { store.notify('error', gate + '，暂不能推进 Offer'); return }
   store.submitApproval({ type: 'stage_advance', application_id: a.id, payload: { target_stage: 'offer' } })
 }
 </script>
@@ -134,8 +144,8 @@ function passAndAdvance(a) {
         </div>
         <div class="acts">
           <button class="primary" :disabled="!isRecruiter" :title="isRecruiter ? '' : '需「招聘负责人」身份安排面试'" @click="addRound">＋ 添加下一轮面试</button>
-          <button class="succ" :disabled="detail.stage !== 'interview' || conclusionOf(lastInterview(detail)) !== 'pass' || !isRecruiter || !!store.pendingTask(detail.id, 'stage_advance')"
-            :title="!isRecruiter ? '需「招聘负责人」身份提请推进' : store.pendingTask(detail.id, 'stage_advance') ? '推进审批中' : '提交推进审批（用人经理审批后进入 Offer）'"
+          <button class="succ" :disabled="detail.stage !== 'interview' || conclusionOf(lastInterview(detail)) !== 'pass' || !isRecruiter || !!store.pendingTask(detail.id, 'stage_advance') || !!offerGateOf(detail)"
+            :title="!isRecruiter ? '需「招聘负责人」身份提请推进' : offerGateOf(detail) || (store.pendingTask(detail.id, 'stage_advance') ? '推进审批中' : '提交推进审批（用人经理审批后进入 Offer）')"
             @click="passAndAdvance(detail)">
             {{ store.pendingTask(detail.id, 'stage_advance') ? '⏳ 推进审批中' : '→ 提请推进到 Offer' }}
           </button>

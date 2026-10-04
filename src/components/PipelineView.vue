@@ -140,6 +140,14 @@ function offerGate(a) {
   const c = iv.conclusion || iv.result || 'pending'
   if (c === 'pending') return { blocked: true, msg: `最近一轮「${iv.round}」尚未给结论` }
   if (c === 'fail') return { blocked: true, msg: `最近一轮「${iv.round}」结论不通过` }
+  // 预约结果联动：候选人责任缺席未重约/候选人改期仍在协商，与服务端硬拦截口径一致
+  const r = a.scheduleRisk
+  if (r?.blocking_noshow) {
+    return { blocked: true, msg: '存在候选人/双方责任缺席未重约，请先在预约沟通完成重约（双方确认）或改判责任' }
+  }
+  if (r?.blocking_reschedule) {
+    return { blocked: true, msg: '候选人发起的改期仍在协商中，请待双方确认新时间或拒绝改期后再推进' }
+  }
   return { blocked: false }
 }
 // 推进到录用只能由 Offer 接受驱动
@@ -284,6 +292,14 @@ function weightText(weights = {}) {
               </span>
               <span v-for="t in ['stage_advance','interview_conclusion','offer_issue'].map(x => pendingTaskOf(a, x)).filter(Boolean)" :key="t.id" class="appr-badge" :title="`审批 #${t.id} 等待${t.chain[t.current_step]?.role === 'hiring_manager' ? '用人经理' : t.chain[t.current_step]?.role === 'recruiter' ? '招聘负责人' : '面试官'}处理`">
                 ⏳ {{ TASK_TYPE_LABEL[t.type] }}审批中
+              </span>
+              <!-- 预约风险：缺席/改期/重约结果由后端同事务汇总回写 scheduleRisk，与报表中心同口径 -->
+              <span v-for="sig in (a.scheduleRisk?.signals || [])" :key="sig" class="sched-risk-badge" :class="a.scheduleRisk.risk_level"
+                :title="`预约风险：${sig}（候选人缺席 ${a.scheduleRisk.candidate_noshow} · 面试官缺席 ${a.scheduleRisk.interviewer_noshow} · 改期 ${a.scheduleRisk.reschedule_total}）`">
+                ⚠️ {{ sig }}
+              </span>
+              <span v-if="a.scheduleRisk?.rebook_open" class="sched-risk-badge mid" title="存在已裁定缺席但未完成重约的预约，推进 Offer 前须先闭环">
+                📅 待重约 {{ a.scheduleRisk.rebook_open }}
               </span>
             </div>
             <div class="kfoot">
@@ -481,6 +497,9 @@ function weightText(weights = {}) {
 .iv-badge em { font-style: normal; opacity: .7; }
 .of-badge { font-size: 10px; border-radius: 9px; padding: 2px 7px; border: 1px solid; background: var(--panel2); }
 .appr-badge { font-size: 10px; border-radius: 9px; padding: 2px 7px; border: 1px solid rgba(255,209,102,.45); color: var(--accent2); background: rgba(255,209,102,.1); }
+.sched-risk-badge { font-size: 10px; border-radius: 9px; padding: 2px 7px; border: 1px solid var(--border); color: var(--muted); background: var(--panel2); }
+.sched-risk-badge.high { color: var(--red); border-color: rgba(255,107,122,.5); background: rgba(255,107,122,.1); }
+.sched-risk-badge.mid { color: var(--accent2); border-color: rgba(255,209,102,.5); background: rgba(255,209,102,.1); }
 .rejected-lane { padding: 0; overflow: hidden; }
 .rl-head { display: flex; justify-content: space-between; align-items: center; padding: 11px 14px; cursor: pointer; user-select: none; }
 .rl-head b { font-size: 14px; display: flex; align-items: center; gap: 8px; }

@@ -64,7 +64,7 @@ function minePending(a) {
   }
   if (store.myRole === 'recruiter') {
     return ((['negotiating', 'rescheduling'].includes(a.status)) && !a.cand_confirmed) ||
-      (a.status === 'no_show' && a.checkin_flagged)
+      (a.status === 'no_show' && a.responsible_party === 'system_pending')
   }
   return false
 }
@@ -318,8 +318,13 @@ const PARTY_LABEL = { candidate: '候选人方', interviewer: '面试官', recru
             <span :class="{ yes: a.status === 'rescheduling' ? a.cand_confirmed : a.cand_confirmed }">
               {{ a.cand_confirmed ? '👤 候选人已确认' : '👤 待候选人确认' }}</span>
             <span :class="{ yes: a.int_confirmed }">{{ a.int_confirmed ? '💬 面试官已确认' : '💬 待面试官确认' }}</span>
-            <span v-if="a.checkin_flagged && a.status === 'no_show'" class="flag-noshow">🤖 {{ a.result_label }}</span>
-            <span v-else-if="a.status === 'no_show'" class="flag-noshow">{{ a.result_label }}</span>
+            <span v-if="a.status === 'no_show'" class="flag-noshow">
+              ⚠️ {{ a.result_label }}<em v-if="a.responsible_label">（{{ a.responsible_label }}）</em>
+            </span>
+          </div>
+          <div class="ac-risk" v-if="a.noshow_count || a.reschedule_count">
+            <span v-if="a.noshow_count" class="rk-chip danger" title="该预约单累计缺席次数（重约后再次缺席累加）">⚠️ 缺席 {{ a.noshow_count }} 次</span>
+            <span v-if="a.reschedule_count" class="rk-chip warn" title="已确认后发起改期累计次数（含被拒绝）">🔁 改期 {{ a.reschedule_count }} 次</span>
           </div>
         </div>
         <div class="card empty" v-if="!list.length">暂无预约，点击右上角「发起预约」开始双向协商。</div>
@@ -474,10 +479,28 @@ const PARTY_LABEL = { candidate: '候选人方', interviewer: '面试官', recru
           </div>
         </div>
 
-        <!-- 缺席裁定条 -->
+        <!-- 缺席裁定条：责任归属以最终裁定为准，系统初判在招聘负责人改判前标「待裁定」 -->
         <div class="noshow-bar" v-if="detail.status === 'no_show'">
           <b>⚠️ {{ detail.result_label }}</b>
-          <span class="muted" v-if="detail.checkin_flagged">系统于结束 15 分钟后初判，招聘负责人可改判或安排重约。</span>
+          <span class="resp-tag" :class="detail.responsible_party === 'interviewer_no_show' ? '' : ''">
+            责任：{{ detail.responsible_label || '待裁定' }}
+          </span>
+          <span class="muted" v-if="detail.responsible_party === 'system_pending'">系统于结束 15 分钟后初判候选人缺席，招聘负责人可改判或安排重约。</span>
+          <span class="muted" v-else-if="detail.adjudicated_by_name">由 {{ detail.adjudicated_by_name }} 于 {{ detail.adjudicated_at }} 裁定{{ detail.adjudicate_note ? '：' + detail.adjudicate_note : '' }}</span>
+        </div>
+        <!-- 裁定/改判历史：每次结论都只追加保留，责任口径与风险报表一致 -->
+        <div class="adj-box" v-if="detail.adjudications?.length">
+          <h4>⚖️ 缺席责任裁定记录（{{ detail.adjudications.length }}）</h4>
+          <div class="adj-item" v-for="j in detail.adjudications" :key="j.id">
+            <span class="adj-seq">#{{ j.seq }}</span>
+            <span class="adj-tag" :class="j.responsible_party">
+              {{ { candidate_no_show: '候选人缺席', interviewer_no_show: '面试官缺席', both_no_show: '双方缺席' }[j.result] }}
+              <em>（{{ j.responsible_label }}）</em>
+            </span>
+            <span class="muted">{{ j.is_system ? '系统初判' : j.adjudged_by_name }}</span>
+            <em class="muted">{{ j.created_at }}</em>
+            <span class="muted" v-if="j.note">{{ j.note }}</span>
+          </div>
         </div>
 
         <!-- 操作区（按角色/状态） -->
@@ -715,6 +738,21 @@ const PARTY_LABEL = { candidate: '候选人方', interviewer: '面试官', recru
 .newline em { font-style: normal; font-weight: 400; font-size: 12px; margin-left: 8px; }
 .d-place { font-size: 12.5px; }
 .noshow-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; border: 1px solid rgba(255,107,122,.45); background: rgba(255,107,122,.07); border-radius: 10px; padding: 10px 13px; margin-bottom: 12px; }
+.resp-tag { font-size: 12px; font-weight: 700; border-radius: 9px; padding: 2px 9px; border: 1px solid rgba(255,209,102,.45); color: var(--accent2); background: rgba(255,209,102,.1); }
+.ac-risk { display: flex; gap: 6px; flex-wrap: wrap; }
+.rk-chip { font-size: 10.5px; border-radius: 9px; padding: 1px 8px; border: 1px solid var(--border); background: var(--panel2); color: var(--muted); }
+.rk-chip.danger { color: var(--red); border-color: rgba(255,107,122,.4); }
+.rk-chip.warn { color: var(--accent2); border-color: rgba(255,209,102,.4); }
+.adj-box { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; background: var(--panel2); }
+.adj-box h4 { font-size: 12.5px; margin-bottom: 8px; }
+.adj-item { display: flex; gap: 9px; align-items: center; flex-wrap: wrap; font-size: 12px; padding: 5px 0; border-bottom: 1px dashed var(--border); }
+.adj-item:last-child { border-bottom: none; }
+.adj-seq { color: var(--muted); font-size: 11px; }
+.adj-tag { border-radius: 9px; padding: 1px 8px; border: 1px solid var(--border); font-weight: 600; }
+.adj-tag em { font-style: normal; font-weight: 400; opacity: .8; margin-left: 2px; }
+.adj-tag.candidate { color: var(--red); border-color: rgba(255,107,122,.4); }
+.adj-tag.interviewer { color: var(--accent2); border-color: rgba(255,209,102,.45); }
+.adj-tag.both { color: var(--purple); border-color: rgba(167,139,250,.45); }
 .d-acts { margin-bottom: 14px; }
 .judge { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; width: 100%; }
 .timeline { border-top: 1px solid var(--border); padding-top: 10px; }

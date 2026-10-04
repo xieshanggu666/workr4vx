@@ -46,6 +46,7 @@ export const ACTION_LABEL = {
   'incident.close': '结案归档', 'authz.grant': '临时授权', 'authz.revoke': '收回授权',
   'state.rollback': '流程状态回退', 'state.reject': '流程淘汰',
   'schedule.suspend': '预约同步挂起', 'schedule.rebook': '预约重约恢复', 'schedule.confirmed': '预约确认恢复',
+  'schedule.noshow': '缺席责任裁定', 'schedule.noshow_auto': '缺席系统初判',
   'approval.auto_cancel': '待审任务同步撤销', 'notification.sync_read': '未读通知同步归并',
   'approval.execute': '审批执行回写', 'approval.failed': '审批执行失败',
   'ticket.create': '创建工单', 'ticket.assign': '工单改派', 'ticket.transition': '工单流转',
@@ -408,11 +409,22 @@ function cancelPendingTasksForIncident(appId, { actor, reason }) {
 }
 
 // 归并该应聘的在途未读通知：预约协商（sched_*）与审批待办（task_*）已随回退失效，
-// 直接标记已读避免铃铛/红点残留；危机处置类通知保留未读（仍是处置待办）。返回按类型计数
+// 直接标记已读避免铃铛/红点残留；危机处置类通知保留未读（仍是处置待办）。返回按类型计数。
+// 预约结果通知去重后按 appointment_id 归属（application_id 可能缺失），这里以「应聘 id + 该应聘全部预约单 id」双侧归并，
+// 与预约模块的通知去重/改判归并口径保持一致，杜绝回退后铃铛/红点残留
 function syncUnreadNotificationsForIncident(appId) {
+  const numId = num(appId)
+  const apptRows = db.prepare('SELECT id FROM appointments WHERE application_id=?').all(numId)
+  const apptIds = apptRows.map(r => r.id)
+  const where = ['(application_id=? AND (type LIKE ? OR type LIKE ?))']
+  const params = [numId, 'sched_%', 'task_%']
+  if (apptIds.length) {
+    where.push(`(appointment_id IN (${apptIds.map(() => '?').join(',')}) AND type LIKE ?)`)
+    params.push(...apptIds, 'sched_%')
+  }
   const rows = db.prepare(`SELECT id,type,recipient_role FROM notifications
-                           WHERE application_id=? AND is_read=0
-                             AND (type LIKE 'sched_%' OR type LIKE 'task_%')`).all(num(appId))
+                           WHERE is_read=0 AND (${where.join(' OR ')})`)
+    .all(...params)
   if (rows.length) {
     const marks = rows.map(() => '?').join(',')
     db.prepare(`UPDATE notifications SET is_read=1 WHERE id IN (${marks})`).run(...rows.map(r => r.id))

@@ -63,7 +63,7 @@ npm run dev     # 同时启动后端(4160) 与 前端 Vite
 | `strategy_versions` | 策略版本治理台账（`pending/returned/scheduled/canary/full/superseded/expired/rolled_back/cancelled/failed`、灰度比例/指定候选人、生效窗口、审批单、回滚原因） |
 | `recalc_jobs` | 显式重算批次（策略发布、灰度生效、灰度转正、回滚、手动批量重算、启动迁移），记录灰度/基线明细数量，串联策略版本和重算范围 |
 | `recalc_items` | 批次内每个职位×候选人的评分明细和实际策略模式（`is_canary`），作为 `matches` 最新分的审计证据 |
-| `applications` | 应聘记录（Stage 状态机 + `match_snapshot`/`matched_at` 投递时评分快照 + `stage_snapshot`/`entered_at` 当前阶段快照 + `reject_from` 淘汰来源 + `version` 乐观锁） |
+| `applications` | 应聘记录（Stage 状态机 + `match_snapshot`/`matched_at` 投递时评分快照 + `stage_snapshot`/`entered_at` 当前阶段快照 + `schedule_risk` 预约风险快照 + `reject_from` 淘汰来源 + `version` 乐观锁） |
 | `application_events` | 候选人每次进入/退出阶段的不可变事件，固化当时评分、策略版本和重算批次；每个 应聘×阶段 仅一条最新正式事件，回退/复活刷新该行 |
 | `offer_change_logs` | Offer 变更留痕（发起/调薪/改期/接受/拒绝/入职/撤回），只追加不改写 |
 | `interviews` | 面试轮次、评价与**面试结论**（`conclusion`：待定/通过/不通过，结论驱动阶段联动） |
@@ -72,14 +72,15 @@ npm run dev     # 同时启动后端(4160) 与 前端 Vite
 | `users` | 平台用户与角色（`recruiter` 招聘负责人 / `interviewer` 面试官 / `hiring_manager` 用人经理） |
 | `approval_tasks` | 审批任务（类型、申请内容快照 `payload`、提交时固化的审批链 `chain` 与 `current_step` 指针、状态、`version` 乐观锁） |
 | `approval_steps` | 审批步骤留痕（提交/逐级通过/退回/重提/撤销/执行回写，只追加不改写） |
-| `notifications` | 审计通知（按接收角色投递：待审提醒/退回/生效/失败/撤销/危机处置，可标记已读；`incident_id/ticket_id/owner_*` 回写危机责任归属） |
+| `notifications` | 审计通知（按接收角色投递：待审提醒/退回/生效/失败/撤销/危机处置，可标记已读；`incident_id/ticket_id/owner_*` 回写危机责任归属；`appointment_id/dedup_key` 预约结果通知归属与去重幂等键） |
 | `crisis_incidents` | 危机事件（严重级别、状态机、关联应聘、跨角色指挥官、复盘链顶哈希） |
 | `crisis_audit_entries` | **危机审计哈希链**（每事件一条 SHA-256 链：关键操作/授权变更/状态回退/审批决策/工单/复盘/结案，只追加；`BEFORE UPDATE/DELETE` 触发器拒绝改写） |
 | `crisis_grants` | 危机期间的临时跨角色授权（授予/收回各上一条链，结案自动收回） |
 | `crisis_tickets` | 危机处置工单（责任到人，创建/改派/流转均上链并回写通知责任人） |
 | `crisis_reports` | 危机复盘报告（草稿可改，定稿强制校验哈希链并固化从审计链汇总的责任矩阵；定稿后不可改） |
 | `schedule_slots` | 面试官/候选人**可用时段池**（`owner_type` 归属方、`source=self/recruiter` 本人维护或 HR 代录、`open/used` 状态与占用预约联动） |
-| `appointments` | 双向预约单（协商状态机 `negotiating/confirmed/rescheduling/declined/completed/no_show/cancelled` + 双方确认位 `cand_confirmed/int_confirmed` + 改期提议 `pending_*` + 提醒幂等位 + `crisis_suspended/incident_id` 危机回退挂起标记） |
+| `appointments` | 双向预约单（协商状态机 `negotiating/confirmed/rescheduling/declined/completed/no_show/cancelled` + 双方确认位 `cand_confirmed/int_confirmed` + 改期提议 `pending_*` + 提醒幂等位 + `crisis_suspended/incident_id` 危机回退挂起标记 + 缺席责任统一字段 `responsible_party/adjudicated_*/reschedule_count/noshow_count`） |
+| `appointment_adjudications` | 缺席责任裁定**只追加**台账（系统初判/招聘负责人裁定/改判，每单连续 `seq`、责任归属 candidate/interviewer/both、裁定人、备注），最终责任以最新一行/`appointments` 当前行为准，重约不清空历史 |
 | `appointment_messages` | 预约沟通留痕（发起/确认/改期/拒绝改期/婉拒/取消/提醒/缺席裁定/重约，只追加，形成协商时间线） |
 
 ## 候选人↔面试官双向预约沟通（📅 预约沟通）
@@ -90,8 +91,12 @@ npm run dev     # 同时启动后端(4160) 与 前端 Vite
 - **双向确认**：发起时双方确认位可预置（HR 默认已与候选人确认；面试官发起默认面试官确认）；两边都为 1 才从「待确认」落定为「已确认」并占用时段、同步 `interviews` 表时间。面试官时段重叠或同一候选人同轮次重复预约返回 409。
 - **确认改期**：已确认预约任一方可发起改期（**原因必填**），进入「改期协商中」：原时间保留、新提议放入 `pending_*` 并重置双方确认位，双方再次确认后新时间生效；任一方可**拒绝改期**，预约自动回到已确认并维持原时间。协商中也可「婉拒本轮」，之后可在原单上「重新协商」（历史时间线保留）。
 - **提醒**：页面顶部「同步提醒/缺席扫描」（`GET /api/schedule/sweep`，幂等）自动扫描——开始前 **24 小时**与 **1 小时**分别向面试官、招聘负责人（转达候选人）投递提醒，时间线写入 `remind24h/remind1h`；也可在详情里**立即手动提醒**。
-- **缺席处理**：结束 **15 分钟宽限期**后仍处已确认（未标记完成）的预约，sweep **系统初判候选人缺席**（`auto_noshow`，可改判）；招聘负责人可裁定/改判为候选人缺席、面试官缺席、双方缺席，缺席后支持**保留缺席记录重新约期**（`rebook`，对方确认后成立）。
-- **API**：`POST /api/schedule/slots|slots/bulk`、`DELETE …/slots/:id`、`POST /api/schedule/appointments`、`…/:id/confirm|propose|reject-reschedule|decline|cancel|resume|rebook|complete|noshow|remind`、`GET /api/schedule/sweep`；预约通知（`sched_*`）点击铃铛直达预约沟通页，导航红点显示待当前身份处理的协商数。
+- **缺席处理**：结束 **15 分钟宽限期**后仍处已确认（未标记完成）的预约，sweep **系统初判候选人缺席**（`auto_noshow`，责任置「待裁定」，可改判）；招聘负责人可裁定/改判为候选人缺席、面试官缺席、双方缺席。**责任判定统一口径**：系统初判/人工裁定/改判全部追加到只追加的 `appointment_adjudications`（带序号、裁定人、备注），最终责任写回 `appointments.responsible_party`；缺席后支持**保留缺席记录重新约期**（`rebook`，对方确认后成立），重约后再次缺席累计 `noshow_count`，历史责任不丢失。
+- **缺席/改期/重约接入招聘阶段与风险报表**：任一预约状态变化（确认/改期/拒绝/婉拒/取消/完成/缺席裁定/重约/危机挂起恢复）都在**同一事务**内重算并回写 `applications.schedule_risk` 风险快照（累计缺席、按候选人/面试官/双方归并的最终责任、改期次数、待重约数、危机挂起数、责任到场率、`offer_blocked` 硬拦截标记），招聘看板、面试管理、报表中心与危机处置读取同一份数据。进入 **Offer 前服务端硬校验**：最近一轮存在「候选人/双方责任缺席未重约」或「候选人发起的改期仍在协商」一律 409 拦截（面试官单方责任缺席不阻塞候选人流程，但计入面试官责任画像）。
+- **通知去重**：结果性/协商类通知带幂等键 `dedup_key`（type + 预约单 + 责任结果/新时间），未读未解决前重发（重复 sweep、重复点击、重复提交）直接跳过；**改判/重约/恢复/完成/取消先把该预约单旧的失效未读通知归并已读**再投递新结果，铃铛与红点不残留不重复打扰；提醒类（24h/1h/手动）刻意允许重复。危机回退同步归并未读通知时同时按「应聘 id + 该应聘全部预约单 id」双侧归并，与预约模块口径一致（危机处置类通知永不自动归并）。
+- **危机回退与阶段恢复一致性**：回退到筛选/投递阶段时进行中的预约统一挂起（释放时段、清空确认/提醒/缺席待裁定标记、风险快照同事务重算）；在原单**重新协商**或缺席**重约**后双方再次确认时被动追加 `schedule.rebook/schedule.confirmed` 审计条目、风险随恢复结果刷新，面试流程随重约/确认恢复；系统初判缺席与人工改判责任也被动上链（`schedule.noshow_auto/schedule.noshow`），进入危机复盘责任矩阵。
+- **报表**：报表中心「⚠️ 面试预约风险报表」给出高/中风险应聘数、候选人/面试官/双方责任缺席、累计改期、待重约、危机挂起、责任到场率、在途应聘风险清单与面试官责任画像；招聘看板卡片显示同步风险徽标（与报表同口径）。
+- **API**：`POST /api/schedule/slots|slots/bulk`、`DELETE …/slots/:id`、`POST /api/schedule/appointments`、`…/:id/confirm|propose|reject-reschedule|decline|cancel|resume|rebook|complete|noshow|remind`、`GET /api/schedule/sweep`；预约通知（`sched_*`）点击铃铛直达预约沟通页，导航红点显示待当前身份处理的协商数（系统初判待裁定计入招聘负责人待办，已裁定/改判后自动消失）。
 
 ## 角色权限与审批链
 

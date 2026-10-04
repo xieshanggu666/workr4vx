@@ -527,6 +527,44 @@ addColumn('recalc_items', 'strategy_mode', `TEXT NOT NULL DEFAULT 'full'`)
 addColumn('appointments', 'crisis_suspended', `INTEGER NOT NULL DEFAULT 0`)
 addColumn('appointments', 'incident_id', `INTEGER NOT NULL DEFAULT 0`)
 
+// 缺席责任判定统一口径：系统初判/招聘负责人裁定/改判全部留痕，责任归属写入 responsible_party；
+// 每次裁定/改判追加一行 appointment_adjudications，最终责任以 appointments 最新一行为准
+addColumn('appointments', 'responsible_party', `TEXT NOT NULL DEFAULT ''`)  // candidate/interviewer/both/system_pending
+addColumn('appointments', 'adjudicated_by', `TEXT NOT NULL DEFAULT ''`)     // system / 用户 id
+addColumn('appointments', 'adjudicated_by_name', `TEXT NOT NULL DEFAULT ''`)
+addColumn('appointments', 'adjudicated_at', `TEXT NOT NULL DEFAULT ''`)
+addColumn('appointments', 'adjudicate_note', `TEXT NOT NULL DEFAULT ''`)
+addColumn('appointments', 'reschedule_count', `INTEGER NOT NULL DEFAULT 0`) // 已确认后发起改期累计次数（被拒绝也计入）
+addColumn('appointments', 'noshow_count', `INTEGER NOT NULL DEFAULT 0`)    // 该预约单累计缺席次数（重约后再次缺席累加）
+
+db.exec(`CREATE TABLE IF NOT EXISTS appointment_adjudications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  appointment_id INTEGER NOT NULL,
+  application_id INTEGER NOT NULL DEFAULT 0,
+  round TEXT NOT NULL DEFAULT '',
+  seq INTEGER NOT NULL DEFAULT 0,                  -- 该预约单第几次裁定（从 1 开始，改判也 +1）
+  result TEXT NOT NULL,                           -- candidate_no_show/interviewer_no_show/both_no_show
+  responsible_party TEXT NOT NULL DEFAULT '',       -- candidate/interviewer/both
+  adjudged_by TEXT NOT NULL DEFAULT '',             -- system / 用户 id
+  adjudged_by_name TEXT NOT NULL DEFAULT '',
+  adjudged_role TEXT NOT NULL DEFAULT '',           -- system/recruiter
+  note TEXT NOT NULL DEFAULT '',
+  is_system INTEGER NOT NULL DEFAULT 0,            -- 1=系统 sweep 初判（待招聘负责人确认）
+  created_at TEXT NOT NULL DEFAULT ''
+);`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_appt_adj_appt ON appointment_adjudications(appointment_id, id);`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_appt_adj_app ON appointment_adjudications(application_id, id);`)
+
+// 通知去重：结果性通知写入幂等键 dedup_key（type + 关联预约 + 责任结果），未解决前重发直接跳过；
+// 危机处置类通知不去重。appointment_id 支持铃铛直达与危机归并口径一致
+addColumn('notifications', 'appointment_id', `INTEGER NOT NULL DEFAULT 0`)
+addColumn('notifications', 'dedup_key', `TEXT NOT NULL DEFAULT ''`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_notifications_dedup ON notifications(dedup_key, is_read) WHERE dedup_key<>'';`)
+
+// 招聘阶段风险快照：预约缺席/改期/重约结果统一汇总后回写（任一预约状态变化同事务重算），
+// 看板/报表/危机处置共用同一口径；历史缺席责任取自只追加的 appointment_adjudications
+addColumn('applications', 'schedule_risk', `TEXT NOT NULL DEFAULT ''`)
+
 // 危机处置审计模块：通知表补齐「责任回写」列（旧库升级）
 addColumn('notifications', 'incident_id', `INTEGER NOT NULL DEFAULT 0`)
 addColumn('notifications', 'ticket_id', `INTEGER NOT NULL DEFAULT 0`)
